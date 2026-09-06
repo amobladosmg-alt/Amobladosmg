@@ -317,6 +317,28 @@ ul{margin:0; padding:0; list-style:none}
 /* ---------- hero ---------- */
 .hero{position:relative; min-height:clamp(600px,90vh,880px); display:flex; align-items:center; overflow:hidden; background:var(--ink)}
 
+/* ---------- hero con vídeo controlado por scroll ---------- */
+/* La altura marca cuánto scroll hace falta para recorrer el vídeo entero. */
+.scroll-video-hero{position:relative; height:300vh}
+.scroll-video-sticky{position:sticky; top:0; height:100vh; width:100%; overflow:hidden}
+.scroll-video-sticky .hero{height:100%; min-height:0}
+.scroll-progress-bar{position:absolute; left:0; bottom:0; width:100%; height:3px; background:rgba(255,255,255,.18); z-index:4}
+.scroll-progress-fill{height:100%; width:0%; background:var(--bronze-light); transition:width .05s linear}
+
+/* En táctil el scrub por scroll no funciona bien: el vídeo se reproduce solo
+   y el hero recupera su altura normal. Igual si se pide menos movimiento. */
+@media (max-width:768px){
+  .scroll-video-hero{height:auto}
+  .scroll-video-sticky{position:relative; height:auto}
+  .scroll-video-sticky .hero{height:auto; min-height:clamp(600px,90vh,880px)}
+  .scroll-progress-bar{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .scroll-video-hero{height:auto}
+  .scroll-video-sticky{position:relative; height:auto}
+  .scroll-video-sticky .hero{height:auto; min-height:clamp(600px,90vh,880px)}
+  .scroll-progress-bar{display:none}
+}
 .hero__media{position:absolute; inset:0; z-index:0}
 .hero__media video,.hero__media img{width:100%; height:100%; object-fit:cover}
 /* Velo ligero: deja ver la animaci&oacute;n del v&iacute;deo y a la vez mantiene
@@ -661,6 +683,9 @@ ul{margin:0; padding:0; list-style:none}
     </div>
   </header>
   <main id="main">
+    <!-- SCROLL-VIDEO-SECTION -->
+    <div class="scroll-video-hero" id="scroll-hero">
+      <div class="scroll-video-sticky">
     <section class="hero" id="hero">
       <div class="hero__media">
         <video
@@ -686,7 +711,10 @@ ul{margin:0; padding:0; list-style:none}
         </div>
       </div>
       <div class="scroll-hint" aria-hidden="true">Desliza<span></span></div>
+      <div class="scroll-progress-bar" aria-hidden="true"><div class="scroll-progress-fill" id="progressFill"></div></div>
     </section>
+      </div>
+    </div>
 
     <div class="hero__strip" style="background:var(--ink)">
       <ul class="shell">
@@ -998,26 +1026,90 @@ ul{margin:0; padding:0; list-style:none}
       </div>
     </div>
   </footer>
-  <!-- El vídeo del hero se reproduce en bucle, silenciado. Algunos navegadores
-       bloquean el autoplay hasta que hay interacción o la pestaña está visible:
-       por eso se reintenta en esos dos momentos. -->
+  <!-- Hero con vídeo controlado por scroll.
+       En escritorio el vídeo no se reproduce solo: avanza fotograma a fotograma
+       según el scroll dentro de .scroll-video-hero.
+       En móvil y con "reducir movimiento" se reproduce en bucle de forma normal,
+       con reintentos por si el navegador bloquea el autoplay. -->
   <script>
     (function () {
       var video = document.getElementById('hero-video');
-      if (!video) return;
+      var hero = document.getElementById('scroll-hero');
+      var progressFill = document.getElementById('progressFill');
+      if (!video || !hero) return;
 
+      var mqMobile = window.matchMedia('(max-width: 768px)');
+      var mqReduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+      var mode = null;      // 'auto' | 'scrub'
+      var ready = false;
+      var rafPending = false;
+
+      /* ---- modo reproducción normal (móvil / movimiento reducido) ---- */
       var tryPlay = function () {
         var p = video.play();
         if (p && typeof p.catch === 'function') p.catch(function () {});
       };
+      var onVisible = function () { if (!document.hidden && mode === 'auto') tryPlay(); };
+      var onFirstInteraction = function () { if (mode === 'auto') tryPlay(); };
 
-      tryPlay();
-      document.addEventListener('visibilitychange', function () {
-        if (!document.hidden) tryPlay();
-      });
+      /* ---- modo scrub (escritorio) ---- */
+      function update() {
+        if (mode !== 'scrub' || !ready || !video.duration) return;
+        var scrolled = -hero.getBoundingClientRect().top;
+        var scrollable = hero.offsetHeight - window.innerHeight;
+        if (scrollable <= 0) return;
+
+        var progress = scrolled / scrollable;
+        if (progress < 0) progress = 0;
+        if (progress > 1) progress = 1;
+
+        var t = progress * video.duration;
+        // Evita reasignaciones inútiles que provocan tirones.
+        if (Math.abs(video.currentTime - t) > 0.01) video.currentTime = t;
+        if (progressFill) progressFill.style.width = (progress * 100) + '%';
+      }
+
+      function onScroll() {
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(function () { update(); rafPending = false; });
+      }
+
+      function setMode() {
+        var next = (mqMobile.matches || mqReduced.matches) ? 'auto' : 'scrub';
+        if (next === mode) return;
+        mode = next;
+
+        if (mode === 'auto') {
+          window.removeEventListener('scroll', onScroll);
+          video.loop = true;
+          tryPlay();
+          if (progressFill) progressFill.style.width = '0%';
+        } else {
+          video.loop = false;
+          video.pause();
+          window.addEventListener('scroll', onScroll, { passive: true });
+          update();
+        }
+      }
+
+      if (video.readyState >= 1) ready = true;
+      video.addEventListener('loadedmetadata', function () { ready = true; update(); });
+
+      document.addEventListener('visibilitychange', onVisible);
       ['pointerdown', 'touchstart', 'keydown'].forEach(function (evt) {
-        window.addEventListener(evt, tryPlay, { passive: true, once: true });
+        window.addEventListener(evt, onFirstInteraction, { passive: true, once: true });
       });
+
+      window.addEventListener('resize', function () { setMode(); update(); }, { passive: true });
+      var onChange = function () { setMode(); update(); };
+      if (mqMobile.addEventListener) {
+        mqMobile.addEventListener('change', onChange);
+        mqReduced.addEventListener('change', onChange);
+      }
+
+      setMode();
     })();
   </script>
   <script>
